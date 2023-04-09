@@ -2,9 +2,11 @@
 
 setlocal EnableDelayedExpansion
 
+call build.bat
+
 for %%f in (listing_*.asm) do (
     set fname=%%f
-    set n=!fname:~8,2!
+    set n=!fname:~8,4!
 
     call :test !n!
 )
