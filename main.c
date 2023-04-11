@@ -345,16 +345,14 @@ dump_instruction (struct instruction *inst)
     char mod[128] = {0};
     char reg[128] = {0};
     char rm[128] = {0};
-    char disp[128] = {0};
-    char data[128] = {0};
 
-    printf ("d=%u w=%u s=%u mod=%s reg=%s r/m=%s disp=%s data=%s\n",
+    printf ("d=%u w=%u s=%u mod=%s reg=%s r/m=%s disp=["BIN_FMT"  "BIN_FMT"] data=["BIN_FMT"  "BIN_FMT"]\n",
             inst->d, inst->w, inst->s,
             binary_print (mod, sizeof (mod), inst->mod),
             binary_print (reg, sizeof (reg), inst->reg),
             binary_print (rm, sizeof (rm), inst->rm),
-            binary_print (disp, sizeof (disp), inst->disp),
-            binary_print (data, sizeof (data), inst->data));
+            BIN_VAL ((inst->disp << 8)), BIN_VAL ((inst->disp & 0xFF)),
+            BIN_VAL ((inst->data << 8)), BIN_VAL ((inst->data & 0xFF)));
 }
 
 static void
@@ -494,10 +492,61 @@ print_instruction (struct instruction *inst)
         case ADD__IMMEDIATE_TO_RM:
         {
             char *dest = registers[inst->d ? inst->reg : inst->rm].array[inst->w];
+            char *source = registers[inst->d ? inst->rm : inst->reg].array[inst->w];
+            char *eac = eac_table[inst->rm];
 
-            fprintf (fp, "%s %s, %d\n", type_str (inst->type), dest, (s8) inst->data);
+            dump_instruction (inst);
+
+            if (inst->mod == 0b11)
+            {
+                fprintf (fp, "%s %s, %d\n", type_str (inst->type), dest, (s8) inst->data);
+            }
+            else if (inst->mod == 0b01 ||
+                     inst->mod == 0b10)
+            {
+                fprintf (fp, "%s", type_str (inst->type));
+                if (inst->w)
+                {
+                    fprintf (fp, " word");
+                }
+                else
+                {
+                    fprintf (fp, " byte");
+                }
+
+                fprintf (fp, " [%s", eac);
+                if (inst->disp)
+                {
+                    fprintf (fp, " + %d", (s16) inst->disp);
+                }
+                fprintf (fp, "], %d\n", (s8) inst->data);
+            }
+            else
+            {
+
+                if (inst->w)
+                {
+                    fprintf (fp, "%s word [%s], %d\n", type_str (inst->type), eac, (s8) inst->data);
+                }
+                else
+                {
+                    fprintf (fp, "%s byte [%s], %d\n", type_str (inst->type), eac, (s8) inst->data);
+                }
+            }
         } break;
         case ADD__IMMEDIATE_TO_ACCUMULATOR:
+        {
+            char *dest = registers[inst->d ? inst->reg : inst->rm].array[inst->w];
+
+            if (inst->w)
+            {
+                fprintf (fp, "%s %s, %d\n", type_str (inst->type), dest, (s16) inst->data);
+            }
+            else
+            {
+                fprintf (fp, "%s %s, %d\n", type_str (inst->type), dest, (s8) inst->data);
+            }
+        } break;
         default:
         {
             // do nothing
@@ -517,8 +566,6 @@ decode_add (u8 *data, struct instruction *inst)
         {
             u8 b0 = data[i++];
             u8 b1 = data[i++];
-
-//            printf("instruction: "BIN_FMT"  "BIN_FMT"\n", BIN_VAL (b0), BIN_VAL (b1));
 
             inst->d = (b0 & 0b10) != 0; // 0000 0010
             inst->w = (b0 & 0b01) != 0; // 0000 0001
@@ -578,8 +625,6 @@ decode_add (u8 *data, struct instruction *inst)
             u8 b0 = data[i++];
             u8 b1 = data[i++];
 
-//            printf("instruction: "BIN_FMT"  "BIN_FMT"\n", BIN_VAL (b0), BIN_VAL (b1));
-
             inst->s = (b0 & 0b10) != 0; // 0000 0010
             inst->w = (b0 & 0b01) != 0; // 0000 0001
 
@@ -637,10 +682,66 @@ decode_add (u8 *data, struct instruction *inst)
                 /* sign extension? */
                 inst->data |= 0xFF << 8;
             }
-
             bytes_consumed = i;
         } break;
         case ADD__IMMEDIATE_TO_ACCUMULATOR:
+        {
+            u8 b0 = data[i++];
+
+            inst->w = (b0 & 0b01) != 0; // 0000 0001
+
+            switch (inst->mod)
+            {
+                case 0b00:
+                {
+                    /**
+                     * Memory mode, no displacements follows
+                     * (Except when R/M = 110, then 16-bit
+                     * displacement follows)
+                     */
+                    if (inst->rm == 0b110)
+                    {
+                        u8 b2 = data[i++];
+                        u8 b3 = data[i++];
+                        inst->disp = (b3 << 8) | b2;
+                    }
+                } break;
+                case 0b01:
+                {
+                    /**
+                     * Memory mode, 8-bit displacement follows
+                     */
+                    inst->disp = data[i++];
+                } break;
+                case 0b10:
+                {
+                    /**
+                     * Memory mode, 16-bit displacement follows
+                     */
+                    u8 disp_low = data[i++];
+                    u8 disp_high = data[i++];
+                    inst->disp = (disp_high << 8) | disp_low;
+                } break;
+                case 0b11:
+                {
+                    /**
+                     * Register mode (no displacement)
+                     */
+                } break;
+                default:
+                {
+                    ASSERT (!"Invalid mod value");
+                } break;
+            }
+
+            inst->data = data[i++];
+            if (inst->w)
+            {
+                inst->data |= data[i++] << 8;
+            }
+
+            bytes_consumed = i;
+        } break;
         default:
         {
             ASSERT (!"Unhandled path\n");
