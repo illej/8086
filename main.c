@@ -54,7 +54,6 @@ struct operand
     enum op_mode mode;
     u16 disp;
     u16 data;
-    bool wide; // only for immediate to accumulator add?
 };
 
 struct instruction
@@ -165,14 +164,7 @@ instruction_print (struct instruction *inst)
         {
             ASSERT (op->data);
 
-            if (op->wide)
-            {
-                fprintf (fp, "%d", (s16) op->data);
-            }
-            else
-            {
-                fprintf (fp, "%d", (s8) op->data);
-            }
+            fprintf (fp, "%d", (s16) op->data);
         }
 
         fprintf (fp, "%s", separators[i]);
@@ -383,7 +375,7 @@ decode_add_i2rm (u8 *buf)
     struct operand *src = &inst.operands[1];
     src->mode = IMMEDIATE;
     src->data = buf[i++];
-    if (inst.s && inst.w)
+    if (inst.s == 0 && inst.w == 1)
     {
         src->data |= 0xFF << 8;
     }
@@ -420,7 +412,6 @@ decode_add_i2a (u8 *buf)
     src->data = buf[i++];
     if (inst.w)
     {
-        src->wide = true; // TODO: why do we need this?
         src->data |= buf[i++] << 8;
     }
 
@@ -488,7 +479,7 @@ decode_sub_ifrm (u8 *buf)
     struct operand *src = &inst.operands[1];
     src->mode = IMMEDIATE;
     src->data = buf[i++];
-    if (inst.s && inst.w)
+    if (inst.s == 0 && inst.w == 1)
     {
         src->data |= 0xFF << 8;
     }
@@ -524,7 +515,6 @@ decode_sub_ifa (u8 *buf)
     src->data = buf[i++];
     if (inst.w)
     {
-        src->wide = true; // TODO: why do we need this?
         src->data |= buf[i++] << 8;
     }
 
