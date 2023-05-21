@@ -45,7 +45,8 @@ enum op_mode
 {
     REGISTER,
     MEMORY,
-    IMMEDIATE
+    IMMEDIATE,
+    DIRECT_ADDRESS
 };
 
 struct operand
@@ -54,6 +55,7 @@ struct operand
     enum op_mode mode;
     u16 disp;
     u16 data;
+    u16 direct_address;
 };
 
 struct instruction
@@ -156,7 +158,8 @@ instruction_print (struct instruction *inst)
             fprintf (fp, "[%s", op->value);
             if (op->disp)
             {
-                fprintf (fp, " + %d", (s16) op->disp);
+                // fprintf (fp, " + %d", (s16) op->disp);
+                fprintf (fp, " + %d", op->disp);
             }
             fprintf (fp, "]");
         }
@@ -165,6 +168,10 @@ instruction_print (struct instruction *inst)
             ASSERT (op->data);
 
             fprintf (fp, "%d", (s16) op->data);
+        }
+        else if (op->mode == DIRECT_ADDRESS)
+        {
+            fprintf (fp, "word [%d]", (s16) op->direct_address);
         }
 
         fprintf (fp, "%s", separators[i]);
@@ -198,6 +205,15 @@ decode_displacement (u8 *buf, struct instruction *inst)
              * Memory mode, 8-bit displacement follows
              */
             inst->disp = buf[i++];
+            // TODO: do we need to sign-extend?
+            // Page 4-20:
+            // If the displacement is only a single byte, the 8086
+            // or 8088 automatically sign-extends this quantity to 16-bits
+            // before using the information in further address calculations.
+//            if (inst->disp)
+//            {
+//                inst->disp |= 0xFF << 8;
+//            }
         } break;
         case 0b10:
         {
@@ -236,8 +252,16 @@ operand_set (struct instruction *inst, struct operand *op, u8 mode, u8 register_
             op->disp = inst->disp;
         }
     }
+    else if (op->mode == DIRECT_ADDRESS)
+    {
+        // TODO: direct_adddress may not be needed
+        op->direct_address = inst->disp;
+        op->disp = inst->disp;
+    }
 }
 
+// TODO: maybe split this into separate decode_dst() and decode_src() ??
+// -- or maybe even decode_mem/reg/imm/direct() ??
 static void
 decode_operands (struct instruction *inst)
 {
@@ -247,9 +271,20 @@ decode_operands (struct instruction *inst)
         case 0b01:
         case 0b10:
         {
-            u8 dst_mode = inst->d ? REGISTER : MEMORY;
+            u8 dst_mode;
             u8 src_mode = inst->d ? MEMORY : REGISTER;
             u8 register_index = inst->reg;
+
+            if (inst->mod == 0b00 &&
+                inst->rm == 0b110)
+            {
+                dst_mode = DIRECT_ADDRESS;
+                register_index = 0;
+            }
+            else
+            {
+                dst_mode = inst->d ? REGISTER : MEMORY;
+            }
 
             operand_set (inst, &inst->operands[0], dst_mode, register_index);
             operand_set (inst, &inst->operands[1], src_mode, register_index);
@@ -264,6 +299,42 @@ decode_operands (struct instruction *inst)
         }
     }
 }
+
+/**
+ * TODO: could organise decode functions more like..
+ *
+ * decode_mov(u8 *buf)
+ * {
+ *   struct instruction inst = { .name = "mov" };
+ *   u8 bits = 0;
+ *
+ *   // check the op code is correct & mov the
+ *   // ptr to the next bit
+ *   bits += parse_literal (buf, 0b100010);
+ *
+ *   bits += get_d (buf, &inst);
+ *   bits += get_w (buf, &inst);
+ *
+ *   bits += get_mod (buf, &inst);
+ *   bits += get_reg (buf, &inst);
+ *   bits += get_rm (buf, &inst);
+ *
+ *   bits += get_disp (buf, &inst);
+ *   bits += get_data (buf, &inst);
+ *
+ *   if (sim->print)
+ *   {
+ *       print_inst (&inst);
+ *   }
+ *
+ *   if (sim->execute)
+ *   {
+ *       execute_inst (sim, &inst);
+ *   }
+ *
+ *   return bits;
+ * }
+ */
 
 static u8
 decode_mov_rm2r (u8 *buf)
@@ -287,6 +358,7 @@ decode_mov_rm2r (u8 *buf)
 //    printf ("DEBUG: "BIN_FMT", "BIN_FMT"\n", BIN_VAL (b0), BIN_VAL (b1));
 
     i += decode_displacement (&buf[i], &inst);
+    inst.disp = (s16) inst.disp; // sign-extension
     decode_operands (&inst);
 
 //    printf ("DEBUG: d=%d w=%d mod="BIN_FMT" reg="BIN_FMT" rm="BIN_FMT"\n",
@@ -300,7 +372,7 @@ decode_mov_rm2r (u8 *buf)
 static u8
 decode_mov_i2rm (u8 *buf)
 {
-    printf ("DEBUG: decoding mov (immediate-to-reg/mem)\n");
+    printf ("ERROR-not-implemented: decoding mov (immediate-to-reg/mem)\n");
     return 0;
 }
 
@@ -377,7 +449,7 @@ decode_add_i2rm (u8 *buf)
     src->data = buf[i++];
     if (inst.s == 0 && inst.w == 1)
     {
-        src->data |= 0xFF << 8;
+        src->data |= 0xFF << 8; // TODO: should be buf[i++] << 8
     }
 //    printf ("DEBUG: d=%d w=%d mod="BIN_FMT" reg="BIN_FMT" rm="BIN_FMT"\n",
 //            inst.d, inst.w, BIN_VAL (inst.mod), BIN_VAL (inst.reg), BIN_VAL (inst.rm));
@@ -431,7 +503,7 @@ decode_sub_r2r (u8 *buf)
 
     ASSERT ((b0 >> 2) == 0b001010);
 
-    printf ("DEBUG: decoding sub (reg/mem to either)\n");
+//    printf ("DEBUG: decoding sub (reg/mem to either)\n");
 
     inst.d = (b0 & 0b00000010) >> 1;
     inst.w = (b0 & 0b00000001);
@@ -459,7 +531,7 @@ decode_sub_ifrm (u8 *buf)
     struct instruction inst = { .name = "sub" };
     u8 i = 0;
 
-    printf ("DEBUG: decoding sub (immediate from reg/memory)\n");
+//    printf ("DEBUG: decoding sub (immediate from reg/memory)\n");
 
     u8 b0 = buf[i++];
     u8 b1 = buf[i++];
@@ -481,7 +553,7 @@ decode_sub_ifrm (u8 *buf)
     src->data = buf[i++];
     if (inst.s == 0 && inst.w == 1)
     {
-        src->data |= 0xFF << 8;
+        src->data |= 0xFF << 8; // TODO: should be buf[i++] << 8
     }
 //    printf ("DEBUG: d=%d w=%d mod="BIN_FMT" reg="BIN_FMT" rm="BIN_FMT"\n",
 //            inst.d, inst.w, BIN_VAL (inst.mod), BIN_VAL (inst.reg), BIN_VAL (inst.rm));
@@ -497,7 +569,7 @@ decode_sub_ifa (u8 *buf)
     struct instruction inst = { .name = "sub" };
     u8 i = 0;
 
-    printf ("DEBUG: decoding sub (immediate from accumulator)\n");
+//    printf ("DEBUG: decoding sub (immediate from accumulator)\n");
 
     u8 b0 = buf[i++];
 
@@ -514,6 +586,120 @@ decode_sub_ifa (u8 *buf)
     src->mode = IMMEDIATE;
     src->data = buf[i++];
     if (inst.w)
+    {
+        src->data |= buf[i++] << 8;
+    }
+
+    instruction_print (&inst);
+
+    return i;
+}
+
+static u8
+decode_cmp_rmnr (u8 *buf)
+{
+    struct instruction inst = { .name = "cmp" };
+    u8 i = 0;
+
+//    printf ("%s\n", __func__);
+
+    u8 b0 = buf[i++];
+    u8 b1= buf[i++];
+
+    ASSERT ((b0 >> 2) == 0b001110);
+
+//    printf ("DEBUG: "BIN_FMT", "BIN_FMT"\n", BIN_VAL (b0), BIN_VAL (b1));
+
+    inst.d = (b0 & 0b00000010) >> 1;
+    inst.w = (b0 & 0b00000001);
+
+    inst.mod = (b1 & 0b11000000) >> 6;
+    inst.reg = (b1 & 0b00111000) >> 3;
+    inst.rm  = (b1 & 0b00000111);
+
+//    printf ("DEBUG: d=%d w=%d mod="BIN_FMT" reg="BIN_FMT" rm="BIN_FMT"\n",
+//            inst.d, inst.w, BIN_VAL (inst.mod), BIN_VAL (inst.reg), BIN_VAL (inst.rm));
+
+    i += decode_displacement (&buf[i], &inst);
+    decode_operands (&inst);
+
+    instruction_print (&inst);
+
+    return i;
+}
+
+static u8
+decode_cmp_iwrm (u8 *buf)
+{
+    struct instruction inst = { .name = "cmp" };
+    u8 i = 0;
+
+//    printf ("%s\n", __func__);
+
+    u8 b0 = buf[i++];
+    u8 b1 = buf[i++];
+
+    ASSERT ((b0 >> 2) == 0b100000);
+
+    inst.s = (b0 & 0b10) != 0; // 0000 0010
+    inst.w = (b0 & 0b01) != 0; // 0000 0001
+
+    inst.mod = (b1 >> 6) & 0b11;  // 1100 0000
+    inst.reg = (b1 >> 3) & 0b111; // 0011 1000
+    inst.rm = b1 & 0b111;         // 0000 0111
+
+//    printf ("DEBUG: "BIN_FMT", "BIN_FMT"\n", BIN_VAL (b0), BIN_VAL (b1));
+//    printf ("DEBUG: s=%d w=%d mod="BIN_FMT" reg="BIN_FMT" rm="BIN_FMT"\n",
+//            inst.s, inst.w, BIN_VAL (inst.mod), BIN_VAL (inst.reg), BIN_VAL (inst.rm));
+
+    i += decode_displacement (&buf[i], &inst);
+
+//    printf ("DEBUG:  disp="BIN_FMT"  "BIN_FMT"\n", BIN_VAL ((inst.disp >> 8)), BIN_VAL ((inst.disp & 0xFF)));
+//    printf ("DEBUG:  disp=%u %d %d %d\n", inst.disp, inst.disp, (s8) inst.disp, (s16) inst.disp);
+
+    // expect: cmp ax, 1000
+    // actual: cmp (null), 232
+
+    decode_operands (&inst);
+
+    struct operand *src = &inst.operands[1];
+    src->mode = IMMEDIATE;
+    src->data = buf[i++];
+    if (inst.s == 1 && inst.w == 1)
+    {
+        src->data = (u8) src->data;
+    }
+
+//    printf ("DEBUG:  data="BIN_FMT"  "BIN_FMT"\n", BIN_VAL ((src->data >> 8)), BIN_VAL ((src->data & 0xFF)));
+//    printf ("DEBUG:  data=%u %d %d %d\n", src->data, src->data, (s8) src->data, (s16) src->data);
+
+    instruction_print (&inst);
+
+    return i;
+}
+
+static u8
+decode_cmp_iwa (u8 *buf)
+{
+    struct instruction inst = { .name = "cmp" };
+    u8 i = 0;
+
+//    printf ("%s\n", __func__);
+
+    u8 b0 = buf[i++];
+
+    ASSERT ((b0 >> 1) == 0b0011110);
+
+    inst.w = (b0 & 0b1);
+    inst.d = 1;       // implied
+    inst.reg = 0b000; // implied
+    
+    decode_operands (&inst);
+
+    struct operand *src = &inst.operands[i];
+    src->mode = IMMEDIATE;
+    src->data = buf[i++];
+    if (inst.w == 1)
     {
         src->data |= buf[i++] << 8;
     }
@@ -542,9 +728,14 @@ decode_shared_100000xx (u8 *buf)
     {
         i = decode_sub_ifrm (buf);
     }
+    else if (reg == 0b111)
+    {
+        i = decode_cmp_iwrm (buf);
+    }
 
     return i;
 }
+
 
 typedef u8 (decode_f) (u8 *buf);
 
@@ -611,6 +802,23 @@ static decode_f *decode_table[] = {
     * 0010110x */
    [0b00101100] = decode_sub_ifa,
    [0b00101101] = decode_sub_ifa,
+
+   /* cmp (reg/memory and register)
+    * 001110xx */
+   [0b00111000] = decode_cmp_rmnr,
+   [0b00111001] = decode_cmp_rmnr,
+   [0b00111010] = decode_cmp_rmnr,
+   [0b00111011] = decode_cmp_rmnr,
+
+   /* cmp (immediate and reg/memory)
+    * 100000xx */
+   [0b10000000] = decode_shared_100000xx,
+   [0b10000001] = decode_shared_100000xx,
+   [0b10000010] = decode_shared_100000xx,
+   [0b10000011] = decode_shared_100000xx,
+
+   [0b00111100] = decode_cmp_iwa,
+   [0b00111101] = decode_cmp_iwa,
 };
 
 static char *

@@ -27,9 +27,9 @@ goto :end
 
     if %errorlevel% == 0 (echo %input_binary% .. OK) else (
         echo %input_binary% .. Failed
-        echo ---------------------------
-        type %output_source%
-        echo ---------------------------
+        rem echo ---------------------------
+        rem type %output_source%
+        rem echo ---------------------------
     )
     goto :eof
 
